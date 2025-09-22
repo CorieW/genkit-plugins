@@ -95,12 +95,15 @@ export function dallE3Model(
 ): ModelAction<typeof DallE3ConfigSchema> {
   return ai.defineModel<typeof DallE3ConfigSchema>(
     {
+      apiVersion: 'v2',
       name: dallE3.name,
       ...dallE3.info,
       configSchema: dallE3.configSchema,
     },
-    async (request) => {
-      const result = await client.images.generate(toDallE3Request(request));
+    async (request, { abortSignal }) => {
+      const result = await client.images.generate(toDallE3Request(request), {
+        signal: abortSignal,
+      });
       return toGenerateResponse(result);
     }
   );

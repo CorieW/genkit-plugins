@@ -148,17 +148,21 @@ export function sttModel(
 
   return ai.defineModel<typeof Whisper1ConfigSchema>(
     {
+      apiVersion: 'v2',
       name: modelId,
       ...model.info,
       configSchema: model.configSchema,
     },
-    async (request) => {
+    async (request, { abortSignal }) => {
       const params = toWhisper1Request(request);
       // Explicitly setting stream to false ensures we use the non-streaming overload
-      const result = await client.audio.transcriptions.create({
-        ...params,
-        stream: false,
-      });
+      const result = await client.audio.transcriptions.create(
+        {
+          ...params,
+          stream: false,
+        },
+        { signal: abortSignal }
+      );
       return toGenerateResponse(result);
     }
   );

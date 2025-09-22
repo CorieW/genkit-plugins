@@ -716,22 +716,33 @@ export function toOpenAiRequestBody(
 export function gptRunner(name: string, client: OpenAI) {
   return async (
     request: GenerateRequest<typeof OpenAiConfigSchema>,
-    streamingCallback?: StreamingCallback<GenerateResponseChunkData>
+    {
+      streamingRequested,
+      sendChunk,
+      abortSignal,
+    }: {
+      streamingRequested: boolean;
+      sendChunk: StreamingCallback<GenerateResponseChunkData>;
+      abortSignal: AbortSignal;
+    }
   ): Promise<GenerateResponseData> => {
     let response: ChatCompletion;
     const body = toOpenAiRequestBody(name, request);
-    if (streamingCallback) {
-      const stream = client.beta.chat.completions.stream({
-        ...body,
-        stream: true,
-        stream_options: {
-          include_usage: true,
+    if (streamingRequested) {
+      const stream = client.beta.chat.completions.stream(
+        {
+          ...body,
+          stream: true,
+          stream_options: {
+            include_usage: true,
+          },
         },
-      });
+        { signal: abortSignal }
+      );
       for await (const chunk of stream) {
         chunk.choices?.forEach((chunk) => {
           const c = fromOpenAiChunkChoice(chunk);
-          streamingCallback({
+          sendChunk({
             index: c.index,
             content: c.message.content,
           });
@@ -739,7 +750,9 @@ export function gptRunner(name: string, client: OpenAI) {
       }
       response = await stream.finalChatCompletion();
     } else {
-      response = await client.chat.completions.create(body);
+      response = await client.chat.completions.create(body, {
+        signal: abortSignal,
+      });
     }
     return {
       candidates: response.choices.map((c) =>
@@ -787,6 +800,7 @@ export function gptModel(
 
   return ai.defineModel(
     {
+      apiVersion: 'v2',
       name: modelId,
       ...modelInformation,
       configSchema,

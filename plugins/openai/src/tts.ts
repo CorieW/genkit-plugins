@@ -148,13 +148,16 @@ export function ttsModel(
 
   return ai.defineModel<typeof TTSConfigSchema>(
     {
+      apiVersion: 'v2',
       name: modelId,
       ...model.info,
       configSchema: model.configSchema,
     },
-    async (request) => {
+    async (request, { abortSignal }) => {
       const ttsRequest = toTTSRequest(name, request);
-      const result = await client.audio.speech.create(ttsRequest);
+      const result = await client.audio.speech.create(ttsRequest, {
+        signal: abortSignal,
+      });
       const resultArrayBuffer = await result.arrayBuffer();
       const resultBuffer = Buffer.from(new Uint8Array(resultArrayBuffer));
       return toGenerateResponse(resultBuffer, ttsRequest.response_format);

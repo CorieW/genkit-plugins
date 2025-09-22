@@ -1303,10 +1303,20 @@ describe('gptRunner', () => {
       },
     };
     const runner = gptRunner('gpt-4o', openaiClient as unknown as OpenAI);
-    await runner({ messages: [] });
-    expect(openaiClient.chat.completions.create).toHaveBeenCalledWith({
-      model: 'gpt-4o',
-    });
+    await runner(
+      { messages: [] },
+      {
+        streamingRequested: false,
+        sendChunk: jest.fn(),
+        abortSignal: new AbortController().signal,
+      }
+    );
+    expect(openaiClient.chat.completions.create).toHaveBeenCalledWith(
+      {
+        model: 'gpt-4o',
+      },
+      { signal: expect.any(AbortSignal) }
+    );
   });
 
   it('should correctly run streaming requests', async () => {
@@ -1344,16 +1354,26 @@ describe('gptRunner', () => {
         },
       },
     };
-    const streamingCallback = jest.fn();
+    const sendChunk = jest.fn();
     const runner = gptRunner('gpt-4o', openaiClient as unknown as OpenAI);
-    await runner({ messages: [] }, streamingCallback);
-    expect(openaiClient.beta.chat.completions.stream).toHaveBeenCalledWith({
-      model: 'gpt-4o',
-      stream: true,
-      stream_options: {
-        include_usage: true,
+    await runner(
+      { messages: [] },
+      {
+        streamingRequested: true,
+        sendChunk,
+        abortSignal: new AbortController().signal,
+      }
+    );
+    expect(openaiClient.beta.chat.completions.stream).toHaveBeenCalledWith(
+      {
+        model: 'gpt-4o',
+        stream: true,
+        stream_options: {
+          include_usage: true,
+        },
       },
-    });
+      { signal: expect.any(AbortSignal) }
+    );
   });
 });
 
@@ -1375,6 +1395,7 @@ describe('gptModel', () => {
     gptModel(ai, 'gpt-4o', {} as OpenAI);
     expect(ai.defineModel).toHaveBeenCalledWith(
       {
+        apiVersion: 'v2',
         name: gpt4o.name,
         ...gpt4o.info,
         configSchema: gpt4o.configSchema,
@@ -1388,6 +1409,7 @@ describe('gptModel', () => {
     gptModel(ai, 'gpt-4.1', {} as OpenAI);
     expect(ai.defineModel).toHaveBeenCalledWith(
       {
+        apiVersion: 'v2',
         name: 'openai/gpt-4.1',
         ...require('./gpt').gpt41.info,
         configSchema: require('./gpt').gpt41.configSchema,
@@ -1397,6 +1419,7 @@ describe('gptModel', () => {
     gptModel(ai, 'gpt-4.1-mini', {} as OpenAI);
     expect(ai.defineModel).toHaveBeenCalledWith(
       {
+        apiVersion: 'v2',
         name: 'openai/gpt-4.1-mini',
         ...require('./gpt').gpt41Mini.info,
         configSchema: require('./gpt').gpt41Mini.configSchema,
@@ -1406,6 +1429,7 @@ describe('gptModel', () => {
     gptModel(ai, 'gpt-4.1-nano', {} as OpenAI);
     expect(ai.defineModel).toHaveBeenCalledWith(
       {
+        apiVersion: 'v2',
         name: 'openai/gpt-4.1-nano',
         ...require('./gpt').gpt41Nano.info,
         configSchema: require('./gpt').gpt41Nano.configSchema,
