@@ -24,6 +24,7 @@ import {
 import { ChatCompletion } from 'groq-sdk/resources/chat/index.mjs';
 import {
   GenerateRequest,
+  GenerateResponseData,
   GenerationCommonConfigSchema,
   Genkit,
   Message,
@@ -572,6 +573,120 @@ export function toGroqRequestBody(
 }
 
 /**
+ * Creates the runner used by Genkit to interact with the Groq model.
+ * @param name The name of the Groq model.
+ * @param client The Groq client instance.
+ * @returns The runner that Genkit will call when the model is invoked.
+ */
+export function groqRunner(name: string, client: Groq) {
+  return async (
+    request: GenerateRequest,
+    {
+      streamingRequested,
+      sendChunk,
+      abortSignal,
+    }: {
+      streamingRequested: boolean;
+      sendChunk: StreamingCallback<GenerateResponseChunkData>;
+      abortSignal: AbortSignal;
+    }
+  ): Promise<GenerateResponseData> => {
+    let response: ChatCompletion;
+    const body = toGroqRequestBody(name, request);
+    
+    if (streamingRequested) {
+      if (request.output?.format === 'json') {
+        throw new Error(
+          'JSON format is not supported for streaming responses.'
+        );
+      }
+      const stream = await client.chat.completions.create({
+        ...body,
+        stream: true,
+      });
+      let fullContent: string = '';
+      let totalPromptTokens = 0;
+      let totalCompletionTokens = 0;
+      let choices: ChatCompletion.Choice[] = [];
+      let completionMetadata: {
+        model: string;
+        id: string;
+        created: number;
+        system_fingerprint?: string;
+        object: string;
+      } = {} as any;
+      for await (const chunk of stream) {
+        // Check if aborted
+        if (abortSignal?.aborted) {
+          throw new Error('Request aborted');
+        }
+        
+        totalPromptTokens += chunk.x_groq?.usage?.prompt_tokens || 0;
+        totalCompletionTokens += chunk.x_groq?.usage?.completion_tokens || 0;
+        if (!completionMetadata.model) {
+          completionMetadata.model = chunk.model;
+          completionMetadata.id = chunk.id;
+          completionMetadata.created = chunk.created;
+          completionMetadata.system_fingerprint = chunk.system_fingerprint;
+          completionMetadata.object = chunk.object;
+        }
+        chunk.choices.forEach((choice) => {
+          choices.push({
+            index: choice.index,
+            logprobs: choice.logprobs as ChatCompletion.Choice.Logprobs,
+            message: {
+              content: choice.delta.content || '',
+              role: 'assistant',
+              tool_calls: choice.delta.tool_calls?.filter(
+                (tc) => tc.type === 'function' && !!tc.function && !!tc.id
+              ) as ChatCompletionMessageToolCall[] | undefined,
+            },
+            finish_reason:
+              choice.finish_reason === 'content_filter'
+                ? 'stop'
+                : choice.finish_reason || 'stop',
+          });
+          const c = fromGroqChunkChoice(choice);
+          sendChunk({
+            index: c.index,
+            content: c.message.content,
+          });
+          fullContent += choice.delta.content || '';
+        });
+      }
+      response = {
+        ...completionMetadata,
+        choices: choices,
+        usage: {
+          prompt_tokens: totalPromptTokens,
+          completion_tokens: totalCompletionTokens,
+          total_tokens: totalPromptTokens + totalCompletionTokens,
+        },
+        object: 'chat.completion',
+      };
+      // TODO: find a way to get the final completion (current approach is a bit hacky) - issue here: https://github.com/groq/groq-typescript/issues/29
+      // response = await stream.finalChatCompletion();
+    } else {
+      response = (await client.chat.completions.create(
+        body
+      )) as ChatCompletion;
+    }
+
+    return {
+      candidates: response.choices.map((c) => {
+        return fromGroqChoice(c, request.output?.format === 'json');
+      }),
+      usage: {
+        inputTokens: response.usage?.prompt_tokens,
+        outputTokens: response.usage?.completion_tokens,
+        totalTokens: response.usage?.total_tokens,
+      },
+      custom: response,
+    };
+  };
+}
+
+/**
  * Defines a Groq model.
  *
  * @param name - The name of the model.
@@ -585,100 +700,11 @@ export function groqModel(ai: Genkit, name: string, client: Groq) {
 
   return ai.defineModel(
     {
+      apiVersion: 'v2',
       name: modelId,
       ...model.info,
       configSchema: model.configSchema,
     },
-    async (
-      request,
-      streamingCallback?: StreamingCallback<GenerateResponseChunkData>
-    ) => {
-      let response: ChatCompletion;
-      const body = toGroqRequestBody(name, request);
-      if (streamingCallback) {
-        if (request.output?.format === 'json') {
-          throw new Error(
-            'JSON format is not supported for streaming responses.'
-          );
-        }
-        const stream = await client.chat.completions.create({
-          ...body,
-          stream: true,
-        });
-        let fullContent: string = '';
-        let totalPromptTokens = 0;
-        let totalCompletionTokens = 0;
-        let choices: ChatCompletion.Choice[] = [];
-        let completionMetadata: {
-          model: string;
-          id: string;
-          created: number;
-          system_fingerprint?: string;
-          object: string;
-        } = {} as any;
-        for await (const chunk of stream) {
-          totalPromptTokens += chunk.x_groq?.usage?.prompt_tokens || 0;
-          totalCompletionTokens += chunk.x_groq?.usage?.completion_tokens || 0;
-          if (!completionMetadata.model) {
-            completionMetadata.model = chunk.model;
-            completionMetadata.id = chunk.id;
-            completionMetadata.created = chunk.created;
-            completionMetadata.system_fingerprint = chunk.system_fingerprint;
-            completionMetadata.object = chunk.object;
-          }
-          chunk.choices.forEach((choice) => {
-            choices.push({
-              index: choice.index,
-              logprobs: choice.logprobs as ChatCompletion.Choice.Logprobs,
-              message: {
-                content: choice.delta.content || '',
-                role: 'assistant',
-                tool_calls: choice.delta.tool_calls?.filter(
-                  (tc) => tc.type === 'function' && !!tc.function && !!tc.id
-                ) as ChatCompletionMessageToolCall[] | undefined,
-              },
-              finish_reason:
-                choice.finish_reason === 'content_filter'
-                  ? 'stop'
-                  : choice.finish_reason || 'stop',
-            });
-            const c = fromGroqChunkChoice(choice);
-            streamingCallback({
-              index: c.index,
-              content: c.message.content,
-            });
-            fullContent += choice.delta.content || '';
-          });
-        }
-        response = {
-          ...completionMetadata,
-          choices: choices,
-          usage: {
-            prompt_tokens: totalPromptTokens,
-            completion_tokens: totalCompletionTokens,
-            total_tokens: totalPromptTokens + totalCompletionTokens,
-          },
-          object: 'chat.completion',
-        };
-        // TODO: find a way to get the final completion (current approach is a bit hacky) - issue here: https://github.com/groq/groq-typescript/issues/29
-        // response = await stream.finalChatCompletion();
-      } else {
-        response = (await client.chat.completions.create(
-          body
-        )) as ChatCompletion;
-      }
-
-      return {
-        candidates: response.choices.map((c) => {
-          return fromGroqChoice(c, request.output?.format === 'json');
-        }),
-        usage: {
-          inputTokens: response.usage?.prompt_tokens,
-          outputTokens: response.usage?.completion_tokens,
-          totalTokens: response.usage?.total_tokens,
-        },
-        custom: response,
-      };
-    }
+    groqRunner(name, client)
   );
 }
