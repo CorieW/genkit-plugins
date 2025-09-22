@@ -77,6 +77,7 @@ export function openaiEmbedder(ai: Genkit, name: string, client: AzureOpenAI) {
 
   return ai.defineEmbedder(
     {
+      apiVersion: 'v2',
       info: model.info!,
       configSchema: TextEmbeddingConfigSchema,
       name: model.name,

@@ -13,9 +13,9 @@
  * limitations under the License.
  */
 
-import type { GenerateRequest, GenerateResponseData, Genkit } from 'genkit';
+import type { GenerateRequest, GenerateResponseData, Genkit, StreamingCallback } from 'genkit';
 import { GenerationCommonConfigSchema, Message, z } from 'genkit';
-import type { ModelAction } from 'genkit/model';
+import type { ModelAction, GenerateResponseChunkData } from 'genkit/model';
 import { modelRef } from 'genkit/model';
 import type AzureOpenAI from 'openai';
 import {
@@ -117,21 +117,42 @@ function toGenerateResponse(
   };
 }
 
+/**
+ * Creates the runner used by Genkit to interact with the Whisper model.
+ * @param client The AzureOpenAI client instance.
+ * @returns The runner that Genkit will call when the model is invoked.
+ */
+export function whisper1Runner(client: AzureOpenAI) {
+  return async (
+    request: GenerateRequest<typeof Whisper1ConfigSchema>,
+    {
+      streamingRequested,
+      sendChunk,
+      abortSignal,
+    }: {
+      streamingRequested: boolean;
+      sendChunk: StreamingCallback<GenerateResponseChunkData>;
+      abortSignal: AbortSignal;
+    }
+  ): Promise<GenerateResponseData> => {
+    const result = await client.audio.transcriptions.create(
+      toWhisper1Request(request)
+    );
+    return toGenerateResponse(result);
+  };
+}
+
 export function whisper1Model(
   ai: Genkit,
   client: AzureOpenAI
 ): ModelAction<typeof Whisper1ConfigSchema> {
   return ai.defineModel<typeof Whisper1ConfigSchema>(
     {
+      apiVersion: 'v2',
       name: whisper1.name,
       ...whisper1.info,
       configSchema: whisper1.configSchema,
     },
-    async (request) => {
-      const result = await client.audio.transcriptions.create(
-        toWhisper1Request(request)
-      );
-      return toGenerateResponse(result);
-    }
+    whisper1Runner(client)
   );
 }

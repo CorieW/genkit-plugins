@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import type { GenerateRequest, GenerateResponseData, Genkit } from 'genkit';
+import type { GenerateRequest, GenerateResponseData, Genkit, StreamingCallback } from 'genkit';
 import { GenerationCommonConfigSchema, Message, z } from 'genkit';
-import type { ModelAction } from 'genkit/model';
+import type { ModelAction, GenerateResponseChunkData } from 'genkit/model';
 import { modelRef } from 'genkit/model';
 import type AzureOpenAI from 'openai';
 import { type SpeechCreateParams } from 'openai/resources/audio/index.mjs';
@@ -121,6 +121,33 @@ function toGenerateResponse(
   };
 }
 
+/**
+ * Creates the runner used by Genkit to interact with the TTS model.
+ * @param name The name of the TTS model.
+ * @param client The AzureOpenAI client instance.
+ * @returns The runner that Genkit will call when the model is invoked.
+ */
+export function ttsRunner(name: string, client: AzureOpenAI) {
+  return async (
+    request: GenerateRequest<typeof TTSConfigSchema>,
+    {
+      streamingRequested,
+      sendChunk,
+      abortSignal,
+    }: {
+      streamingRequested: boolean;
+      sendChunk: StreamingCallback<GenerateResponseChunkData>;
+      abortSignal: AbortSignal;
+    }
+  ): Promise<GenerateResponseData> => {
+    const ttsRequest = toTTSRequest(name, request);
+    const result = await client.audio.speech.create(ttsRequest);
+    const resultArrayBuffer = await result.arrayBuffer();
+    const resultBuffer = Buffer.from(new Uint8Array(resultArrayBuffer));
+    return toGenerateResponse(resultBuffer, ttsRequest.response_format);
+  };
+}
+
 export function ttsModel(
   ai: Genkit,
   name: string,
@@ -132,16 +159,11 @@ export function ttsModel(
 
   return ai.defineModel<typeof TTSConfigSchema>(
     {
+      apiVersion: 'v2',
       name: modelId,
       ...model.info,
       configSchema: model.configSchema,
     },
-    async (request) => {
-      const ttsRequest = toTTSRequest(name, request);
-      const result = await client.audio.speech.create(ttsRequest);
-      const resultArrayBuffer = await result.arrayBuffer();
-      const resultBuffer = Buffer.from(new Uint8Array(resultArrayBuffer));
-      return toGenerateResponse(resultBuffer, ttsRequest.response_format);
-    }
+    ttsRunner(name, client)
   );
 }

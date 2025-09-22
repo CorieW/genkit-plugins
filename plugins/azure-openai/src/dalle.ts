@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import type { GenerateRequest, GenerateResponseData, Genkit } from 'genkit';
+import type { GenerateRequest, GenerateResponseData, Genkit, StreamingCallback } from 'genkit';
 import { GenerationCommonConfigSchema, Message, z } from 'genkit';
-import type { ModelAction } from 'genkit/model';
+import type { ModelAction, GenerateResponseChunkData } from 'genkit/model';
 import { modelRef } from 'genkit/model';
 import AzureOpenAI from 'openai';
 import {
@@ -92,19 +92,42 @@ function toGenerateResponse(result: ImagesResponse): GenerateResponseData {
   return { candidates };
 }
 
+/**
+ * Creates the runner used by Genkit to interact with the DALL-E 3 model.
+ * @param client The AzureOpenAI client instance.
+ * @returns The runner that Genkit will call when the model is invoked.
+ */
+export function dallE3Runner(client: AzureOpenAI) {
+  return async (
+    request: GenerateRequest & {
+      config?: { custom?: z.infer<typeof DallE3ConfigSchema> };
+    },
+    {
+      streamingRequested,
+      sendChunk,
+      abortSignal,
+    }: {
+      streamingRequested: boolean;
+      sendChunk: StreamingCallback<GenerateResponseChunkData>;
+      abortSignal: AbortSignal;
+    }
+  ): Promise<GenerateResponseData> => {
+    const result = await client.images.generate(toDallE3Request(request));
+    return toGenerateResponse(result);
+  };
+}
+
 export function dallE3Model(
   ai: Genkit,
   client: AzureOpenAI
 ): ModelAction<typeof DallE3ConfigSchema> {
   return ai.defineModel<typeof DallE3ConfigSchema>(
     {
+      apiVersion: 'v2',
       name: dallE3.name,
       ...dallE3.info,
       configSchema: dallE3.configSchema,
     },
-    async (request) => {
-      const result = await client.images.generate(toDallE3Request(request));
-      return toGenerateResponse(result);
-    }
+    dallE3Runner(client)
   );
 }
