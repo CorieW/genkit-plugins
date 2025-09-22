@@ -453,7 +453,73 @@ export function toCohereRequestBody(
 }
 
 /**
- *
+ * Creates the runner used by Genkit to interact with the Cohere model.
+ * @param name The name of the Cohere model.
+ * @param client The Cohere client instance.
+ * @returns The runner that Genkit will call when the model is invoked.
+ */
+export function cohereRunner(
+  name: string,
+  client: CohereClient
+) {
+  return async (
+    request: GenerateRequest<typeof CohereConfigSchema>,
+    {
+      streamingRequested,
+      sendChunk,
+      abortSignal,
+    }: {
+      streamingRequested: boolean;
+      sendChunk: StreamingCallback<GenerateResponseChunkData>;
+      abortSignal: AbortSignal;
+    }
+  ) => {
+    let response: Cohere.NonStreamedChatResponse | undefined;
+    const body = toCohereRequestBody(name, request);
+    
+    if (streamingRequested) {
+      // Based on these docs: https://docs.cohere.com/docs/streaming
+      const stream = await client.chatStream(body);
+      let eventIndex = 0;
+      for await (const event of stream) {
+        const c = fromCohereStreamEvent(event, eventIndex);
+        sendChunk({
+          index: c.index,
+          content: c.message.content,
+          custom: c.custom,
+        });
+        eventIndex++;
+        if (event.eventType === 'stream-end') {
+          response = event.response;
+          break;
+        }
+      }
+    } else {
+      response = await client.chat(body);
+    }
+    
+    if (response === undefined) {
+      throw new Error(
+        'No response from Cohere API, or stream ended unexpectedly.'
+      );
+    }
+    
+    return {
+      candidates: [fromCohereChatResponse(response)],
+      usage: {
+        inputTokens: response.meta?.tokens?.inputTokens,
+        outputTokens: response.meta?.tokens?.outputTokens,
+        totalTokens:
+          (response.meta?.tokens?.inputTokens || 0) +
+          (response.meta?.tokens?.outputTokens || 0),
+      },
+      custom: response,
+    };
+  };
+}
+
+/**
+ * Defines a Cohere model with the given name and Cohere client.
  */
 export function commandModel(
   ai: Genkit,
@@ -466,60 +532,11 @@ export function commandModel(
 
   return ai.defineModel(
     {
+      apiVersion: 'v2',
       name: modelId,
       ...model.info,
-      configSchema: SUPPORTED_COMMAND_MODELS[name].configSchema,
+      configSchema: model.configSchema,
     },
-    async (
-      request,
-      streamingCallback?: StreamingCallback<GenerateResponseChunkData>
-    ): Promise<{
-      candidates: CandidateData[];
-      usage: {
-        inputTokens: number | undefined;
-        outputTokens: number | undefined;
-        totalTokens: number;
-      };
-      custom: Cohere.NonStreamedChatResponse;
-    }> => {
-      let response: Cohere.NonStreamedChatResponse | undefined;
-      const body = toCohereRequestBody(name, request);
-      if (streamingCallback) {
-        // Based on these docs: https://docs.cohere.com/docs/streaming
-        const stream = await client.chatStream(body);
-        let eventIndex = 0;
-        for await (const event of stream) {
-          const c = fromCohereStreamEvent(event, eventIndex);
-          streamingCallback({
-            index: c.index,
-            content: c.message.content,
-            custom: c.custom,
-          });
-          eventIndex++;
-          if (event.eventType === 'stream-end') {
-            response = event.response;
-            break;
-          }
-        }
-      } else {
-        response = await client.chat(body);
-      }
-      if (response === undefined) {
-        throw new Error(
-          'No response from Cohere API, or stream ended unexpectedly.'
-        );
-      }
-      return {
-        candidates: [fromCohereChatResponse(response)],
-        usage: {
-          inputTokens: response.meta?.tokens?.inputTokens,
-          outputTokens: response.meta?.tokens?.outputTokens,
-          totalTokens:
-            (response.meta?.tokens?.inputTokens || 0) +
-            (response.meta?.tokens?.outputTokens || 0),
-        },
-        custom: response,
-      };
-    }
+    cohereRunner(name, client)
   );
 }
