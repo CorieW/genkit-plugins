@@ -626,7 +626,64 @@ export function toOpenAiRequestBody(
 }
 
 /**
- *
+ * Creates the runner used by Genkit to interact with the GPT model.
+ * @param name The name of the GPT model.
+ * @param client The AzureOpenAI client instance.
+ * @returns The runner that Genkit will call when the model is invoked.
+ */
+export function gptRunner(name: string, client: AzureOpenAI) {
+  return async (
+    request: GenerateRequest,
+    {
+      streamingRequested,
+      sendChunk,
+      abortSignal,
+    }: {
+      streamingRequested: boolean;
+      sendChunk: StreamingCallback<GenerateResponseChunkData>;
+      abortSignal: AbortSignal;
+    }
+  ) => {
+    let response: ChatCompletion;
+    const body = toOpenAiRequestBody(name, request);
+    
+    if (streamingRequested) {
+      const stream = client.beta.chat.completions.stream({
+        ...body,
+        stream: true,
+        stream_options: {
+          include_usage: true,
+        },
+      });
+      for await (const chunk of stream) {
+        chunk.choices?.forEach((chunk) => {
+          const c = fromOpenAiChunkChoice(chunk);
+          sendChunk({
+            index: c.index,
+            content: c.message.content,
+          });
+        });
+      }
+      response = await stream.finalChatCompletion();
+    } else {
+      response = await client.chat.completions.create(body);
+    }
+    return {
+      candidates: response.choices.map((c) =>
+        fromOpenAiChoice(c, request.output?.format === 'json')
+      ),
+      usage: {
+        inputTokens: response.usage?.prompt_tokens,
+        outputTokens: response.usage?.completion_tokens,
+        totalTokens: response.usage?.total_tokens,
+      },
+      custom: response,
+    };
+  };
+}
+
+/**
+ * Defines a GPT model with the given name and AzureOpenAI client.
  */
 export function gptModel(ai: Genkit, name: string, client: AzureOpenAI) {
   const modelId = `azure-openai/${name}`;
@@ -635,48 +692,11 @@ export function gptModel(ai: Genkit, name: string, client: AzureOpenAI) {
 
   return ai.defineModel(
     {
+      apiVersion: 'v2',
       name: modelId,
       ...model.info,
       configSchema: SUPPORTED_GPT_MODELS[name].configSchema,
     },
-    async (
-      request,
-      streamingCallback?: StreamingCallback<GenerateResponseChunkData>
-    ) => {
-      let response: ChatCompletion;
-      const body = toOpenAiRequestBody(name, request);
-      if (streamingCallback) {
-        const stream = client.beta.chat.completions.stream({
-          ...body,
-          stream: true,
-          stream_options: {
-            include_usage: true,
-          },
-        });
-        for await (const chunk of stream) {
-          chunk.choices?.forEach((chunk) => {
-            const c = fromOpenAiChunkChoice(chunk);
-            streamingCallback({
-              index: c.index,
-              content: c.message.content,
-            });
-          });
-        }
-        response = await stream.finalChatCompletion();
-      } else {
-        response = await client.chat.completions.create(body);
-      }
-      return {
-        candidates: response.choices.map((c) =>
-          fromOpenAiChoice(c, request.output?.format === 'json')
-        ),
-        usage: {
-          inputTokens: response.usage?.prompt_tokens,
-          outputTokens: response.usage?.completion_tokens,
-          totalTokens: response.usage?.total_tokens,
-        },
-        custom: response,
-      };
-    }
+    gptRunner(name, client)
   );
 }
